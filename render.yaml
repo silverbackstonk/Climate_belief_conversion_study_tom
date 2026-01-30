@@ -3,7 +3,7 @@ services:
     name: climate-conversion-api
     env: node
     plan: starter
-    buildCommand: npm i && npx prisma generate && npm run build
+    buildCommand: npm i && npx prisma generate && npx prisma migrate deploy && npm run build
     startCommand: npm run start
     healthCheckPath: /health
     autoDeploy: true

@@ -497,6 +497,68 @@ app.get('/api/admin/health-db', async (req, res) => {
     }
 });
 
+// Database counts endpoint - ADMIN_TOKEN protected for verification
+app.get('/api/admin/db-counts', async (req, res) => {
+    try {
+        // Check admin token
+        const token = req.headers['x-admin-token'];
+        if (!process.env.ADMIN_TOKEN || token !== process.env.ADMIN_TOKEN) {
+            return res.status(403).json({
+                error: 'Forbidden',
+                message: 'Valid ADMIN_TOKEN required'
+            });
+        }
+        
+        const dbAvailable = await database.isDatabaseAvailable();
+        
+        if (!dbAvailable) {
+            return res.status(503).json({
+                ok: false,
+                database: {
+                    available: false,
+                    message: 'Database connection not available'
+                },
+                counts: {
+                    sessions: 0,
+                    messages: 0,
+                    individual_differences: 0,
+                    conversation_states: 0
+                },
+                environment: process.env.NODE_ENV,
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        // Get counts from database
+        const stats = await database.getDatabaseStats();
+        
+        res.json({
+            ok: true,
+            database: {
+                available: true,
+                connection_status: 'connected'
+            },
+            counts: {
+                sessions: stats?.tables?.sessions?.count || 0,
+                messages: stats?.tables?.messages?.count || 0,
+                individual_differences: stats?.tables?.individual_differences?.count || 0,
+                conversation_states: stats?.tables?.conversation_states?.count || 0
+            },
+            environment: process.env.NODE_ENV,
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('Error getting db-counts:', error);
+        res.status(500).json({
+            ok: false,
+            error: error.message,
+            environment: process.env.NODE_ENV,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
 // Legacy health endpoint (keeping for backwards compatibility)
 app.get('/healthz', (req, res) => {
   res.json({

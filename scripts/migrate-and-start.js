@@ -15,7 +15,9 @@ console.log('🚀 Starting deployment preparations...');
 
 // Run Prisma migrations for database setup
 async function runPrismaMigrations() {
-    console.log('🗃️ Running Prisma migrations...');
+    const timestamp = new Date().toISOString();
+    console.log(`🗃️ [${timestamp}] Running Prisma migrations...`);
+    console.log(`📊 DATABASE_URL configured: ${process.env.DATABASE_URL ? 'YES' : 'NO'}`);
     
     return new Promise((resolve, reject) => {
         const migrate = spawn('npx', ['prisma', 'migrate', 'deploy'], {
@@ -24,17 +26,26 @@ async function runPrismaMigrations() {
         });
         
         migrate.on('close', (code) => {
+            const completeTimestamp = new Date().toISOString();
             if (code === 0) {
-                console.log('✅ Prisma migrations completed successfully');
+                console.log(`✅ [${completeTimestamp}] Prisma migrations completed successfully`);
+                console.log('📋 Migration status: All pending migrations have been applied');
                 resolve(true);
             } else {
-                console.error(`❌ Prisma migrations failed with exit code ${code}`);
+                console.error(`❌ [${completeTimestamp}] Prisma migrations failed with exit code ${code}`);
+                console.error(`🔍 Troubleshooting: Check DATABASE_URL, network connectivity, and Postgres permissions`);
                 reject(new Error(`Migration failed with code ${code}`));
             }
         });
         
         migrate.on('error', (error) => {
-            console.error('❌ Failed to run Prisma migrations:', error.message);
+            const errorTimestamp = new Date().toISOString();
+            console.error(`❌ [${errorTimestamp}] Failed to run Prisma migrations:`, error.message);
+            console.error(`🔍 Error details:`, JSON.stringify({
+                message: error.message,
+                code: error.code,
+                stack: error.stack?.split('\n')[0]
+            }));
             reject(error);
         });
     });
