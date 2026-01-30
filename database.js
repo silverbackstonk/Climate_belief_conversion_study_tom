@@ -16,7 +16,10 @@ function initializePrisma() {
     if (prisma) return prisma;
     
     if (!process.env.DATABASE_URL) {
-        console.log('⚠️ DATABASE_URL not configured, using file fallback');
+        if (process.env.NODE_ENV === 'production') {
+            throw new Error('❌ DATABASE_URL is required in production. File storage not allowed.');
+        }
+        console.log('⚠️ DATABASE_URL not configured, using file fallback (development only)');
         return null;
     }
     

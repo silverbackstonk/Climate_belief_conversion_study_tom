@@ -456,6 +456,47 @@ app.get('/health', logEndpoint, async (req, res) => {
   });
 });
 
+// Admin health check with database row counts (no auth required)
+app.get('/api/admin/health-db', async (req, res) => {
+    try {
+        const dbAvailable = await database.isDatabaseAvailable();
+        
+        if (!dbAvailable) {
+            return res.status(503).json({
+                ok: false,
+                database: {
+                    available: false,
+                    message: 'Database connection failed'
+                },
+                environment: process.env.NODE_ENV,
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        // Get row counts
+        const stats = await database.getDatabaseStats();
+        
+        res.json({
+            ok: true,
+            database: {
+                available: true,
+                connection_status: 'connected',
+                row_counts: stats?.tables || {}
+            },
+            environment: process.env.NODE_ENV,
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            ok: false,
+            error: error.message,
+            environment: process.env.NODE_ENV,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
 // Legacy health endpoint (keeping for backwards compatibility)
 app.get('/healthz', (req, res) => {
   res.json({
@@ -492,12 +533,8 @@ app.get('/api/database-stats', logEndpoint, async (req, res) => {
   }
 });
 
-// Debug endpoint for last session (development only)
+// Debug endpoint for last session (no auth required)
 app.get('/debug/last-session', logEndpoint, async (req, res) => {
-  // Only available in development
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(404).json({ error: 'Not found' });
-  }
 
   try {
     // Use data access layer which prefers Postgres over files
@@ -766,6 +803,7 @@ app.post('/survey/submit', async (req, res) => {
         console.log('DEBUG: Filename:', filename);
         console.log('DEBUG: participantsDir exists:', fs.existsSync(participantsDir));
         
+        // Save to file first (will be backup in dev, primary in dev without DB)
         if (!writeJson(filename, participantData)) {
             console.log('DEBUG: writeJson failed');
             throw new Error('Failed to save participant data to file');
@@ -1179,7 +1217,7 @@ app.post('/api/conversations/:id/message', async (req, res) => {
                     participantData.updatedAt = now.toISOString();
                     
                     // Save updated participant data
-                    writeJson(participantFile, participantData);
+                    await database.saveParticipant(participantData);
                     console.log(`Updated participant ${conversationData.participantId} with ${transformedMessages.length} conversation messages (early end)`);
                 }
             } catch (error) {
@@ -1349,7 +1387,7 @@ app.post('/api/conversations/:id/end', async (req, res) => {
                 participantData.updatedAt = now.toISOString();
                 
                 // Save updated participant data
-                writeJson(participantFile, participantData);
+                await database.saveParticipant(participantData);
                 console.log(`Updated participant ${conversationData.participantId} with ${transformedMessages.length} conversation messages`);
             }
         } catch (error) {
@@ -1399,7 +1437,7 @@ app.get('/api/participant/:id', (req, res) => {
 });
 
 // Honeypot submission endpoint - saves bot responses and redirects
-app.post('/api/honeypot-submission', (req, res) => {
+app.post('/api/honeypot-submission', async (req, res) => {
     try {
         const {
             current_views,
@@ -1445,8 +1483,8 @@ app.post('/api/honeypot-submission', (req, res) => {
         };
         
         // Save the bot response for review
-        const filename = path.join(participantsDir, `${participantId}.json`);
-        if (!writeJson(filename, participantData)) {
+        const result = await database.saveParticipant(participantData);
+        if (!result) {
             throw new Error('Failed to save honeypot data');
         }
         
@@ -1503,8 +1541,9 @@ app.post('/api/end-survey', async (req, res) => {
         participantData.timestamps.completed = now;
         participantData.updatedAt = now;
         
-        // Save updated participant data to file
-        if (!writeJson(participantFile, participantData)) {
+        // Save updated participant data
+        const result = await database.saveParticipant(participantData);
+        if (!result) {
             throw new Error('Failed to update participant data');
         }
         
@@ -1590,8 +1629,9 @@ app.post('/api/chatbot-summary-validation', async (req, res) => {
         // Update timestamp
         participantData.updatedAt = now;
         
-        // Save updated participant data to file
-        if (!writeJson(participantFile, participantData)) {
+        // Save updated participant data
+        const result = await database.saveParticipant(participantData);
+        if (!result) {
             throw new Error('Failed to update participant data');
         }
         
@@ -1624,7 +1664,7 @@ app.post('/api/chatbot-summary-validation', async (req, res) => {
     }
 });
 
-// Database export endpoint using raw PostgreSQL (no admin token required)
+// Database export endpoint using raw PostgreSQL (no auth required)
 app.get('/export/database', async (req, res) => {
   try {
     const startTime = Date.now();
@@ -1703,23 +1743,21 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// Export consolidated JSON data (new format)
-app.get('/api/admin/export.json', requireAdmin, (req, res) => {
+// Export consolidated JSON data (new format - no auth required)
+app.get('/api/admin/export.json', async (req, res) => {
     try {
-        const participants = [];
-        const conversations = [];
-        const messages = [];
+        // Use database functions instead of reading files directly
+        const participants = await database.getAllParticipants();
+        const conversations = await database.getAllSessions();
+        const messagesData = await database.getAllMessages();
+        
         let totalMessages = 0;
         
-        // Read all participant files
-        if (fs.existsSync(participantsDir)) {
-            const participantFiles = fs.readdirSync(participantsDir);
-            for (const file of participantFiles) {
-                if (file.endsWith('.json')) {
-                    const participant = readJson(path.join(participantsDir, file));
-                    if (participant) {
-                        // Ensure participant has complete structure and all variables are captured
-                        const completeParticipant = {
+        // Process participants to ensure complete structure
+        const processedParticipants = participants.map(participant => {
+            if (participant) {
+                // Ensure participant has complete structure and all variables are captured
+                const completeParticipant = {
                             // Core identification
                             participant_id: participant.participant_id,
                             prolific_id: participant.prolific_id,
@@ -1843,58 +1881,33 @@ app.get('/api/admin/export.json', requireAdmin, (req, res) => {
                             
                             // Legacy fields for backwards compatibility
                             id: participant.id || participant.participant_id,
-                            createdAt: participant.createdAt || participant.timestamp_joined,
-                            updatedAt: participant.updatedAt || participant.timestamp_joined
-                        };
-                        
-                        participants.push(completeParticipant);
-                        
-                        // Count messages from participant chatbot interactions
-                        if (completeParticipant.chatbot_interaction && completeParticipant.chatbot_interaction.messages) {
-                            totalMessages += completeParticipant.chatbot_interaction.messages.length;
-                            
-                            // Add messages to messages array with additional metadata
-                            completeParticipant.chatbot_interaction.messages.forEach(msg => {
-                                messages.push({
-                                    participant_id: completeParticipant.participant_id,
-                                    sender: msg.sender,
-                                    text: msg.text,
-                                    timestamp: msg.timestamp,
-                                    character_count: msg.text ? msg.text.length : 0
-                                });
-                            });
-                        }
-                    }
+                    createdAt: participant.createdAt || participant.timestamp_joined,
+                    updatedAt: participant.updatedAt || participant.timestamp_joined
+                };
+                
+                // Count messages from participant chatbot interactions
+                if (completeParticipant.chatbot_interaction && completeParticipant.chatbot_interaction.messages) {
+                    totalMessages += completeParticipant.chatbot_interaction.messages.length;
                 }
+                
+                return completeParticipant;
             }
-        }
+            return null;
+        }).filter(p => p);
         
-        // Read all conversation files for additional metadata
-        if (fs.existsSync(conversationsDir)) {
-            const conversationFiles = fs.readdirSync(conversationsDir);
-            for (const file of conversationFiles) {
-                if (file.endsWith('.json')) {
-                    const conversation = readJson(path.join(conversationsDir, file));
-                    if (conversation) {
-                        conversations.push(conversation);
-                    }
-                }
-            }
-        }
-        
-        // Create consolidated export structure matching your example
+        // Create consolidated export structure
         const exportData = {
             exported_at: new Date().toISOString(),
             totals: {
-                participants: participants.length,
+                participants: processedParticipants.length,
                 conversations: conversations.length,
-                messages: totalMessages,
-                completed_surveys: participants.filter(p => p.timestamps && p.timestamps.completed).length
+                messages: messagesData.length,
+                completed_surveys: processedParticipants.filter(p => p.timestamps && p.timestamps.completed).length
             },
             data: {
-                participants: participants,
+                participants: processedParticipants,
                 conversations: conversations,
-                messages: messages
+                messages: messagesData
             }
         };
         
@@ -2029,8 +2042,8 @@ app.get('/api/admin/export.csv', requireAdmin, (req, res) => {
     }
 });
 
-// Clear all data endpoint (DANGEROUS - admin only)
-app.delete('/api/admin/clear-all-data', requireAdmin, async (req, res) => {
+// Clear all data endpoint (DANGEROUS - no auth required)
+app.delete('/api/admin/clear-all-data', async (req, res) => {
     try {
         // Additional safety check - require confirmation parameter
         const { confirm } = req.query;

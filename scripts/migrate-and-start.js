@@ -4,6 +4,13 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
+// Load .env file from project root (before any env validation)
+try {
+    require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
+} catch (e) {
+    // dotenv not installed; will be caught by validation below
+}
+
 console.log('🚀 Starting deployment preparations...');
 
 // Run Prisma migrations for database setup
@@ -177,6 +184,11 @@ async function main() {
             try {
                 await runPrismaMigrations();
             } catch (error) {
+                if (process.env.NODE_ENV === 'production') {
+                    console.error('❌ Database migrations failed in production');
+                    console.error('Error:', error.message);
+                    process.exit(1); // Fatal error in production
+                }
                 console.warn('⚠️ Database migrations failed, continuing without database:', error.message);
             }
         } else {

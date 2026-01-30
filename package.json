@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "build": "npm run lint --if-present && npx prisma generate",
-    "start": "node scripts/migrate-and-start.js",
+    "start": "node -r dotenv/config scripts/migrate-and-start.js",
     "dev": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "db:migrate": "npx prisma migrate deploy",
